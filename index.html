@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>PSX Signals</title>
+<style>
+:root{--bg:#eef2f4;--sf:#fff;--ink:#10222e;--mut:#5d7080;--ln:#d5dde2;--up:#0b6e4f;--dn:#b42318;--ac:#1d3a5f;--warn:#9a6700}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1a22;--sf:#14252f;--ink:#e6eef2;--mut:#93a7b4;--ln:#243a47;--up:#4cc38a;--dn:#ff8a7a;--ac:#8fb4e3;--warn:#e3b341}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:4px 0 2px;letter-spacing:-.2px}
+.sub{color:var(--mut);font-size:14px;margin:0 0 16px}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:13px;border:1px solid var(--ln)}
+.pill.on{color:var(--up);border-color:var(--up)}
+.card{background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:14px;margin:0 0 14px}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.sym{font-size:22px;font-weight:700}.sh{color:var(--up);font-weight:600;font-size:14px}
+.st{font-size:13px;font-weight:600;padding:2px 8px;border-radius:6px;border:1px solid var(--ln)}
+.st.win{color:var(--up);border-color:var(--up)}.st.loss{color:var(--dn);border-color:var(--dn)}
+.meta{color:var(--mut);font-size:14px;margin:2px 0 12px}
+.lad{position:relative;height:34px;margin:6px 4px 20px}
+.lad .tr{position:absolute;left:0;right:0;top:15px;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--dn) var(--e),var(--up) var(--e))}
+.lad i{position:absolute;top:8px;width:2px;height:18px;background:var(--ink);opacity:.5}
+.lad b{position:absolute;top:2px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:var(--ac);border:2px solid var(--sf);box-shadow:0 0 0 1px var(--ac);top:10px}
+.lad span{position:absolute;top:28px;font-size:11px;color:var(--mut);transform:translateX(-50%);white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:0 0 12px}
+.grid div{border:1px solid var(--ln);border-radius:8px;padding:8px 10px}
+.grid small{display:block;color:var(--mut);font-size:12px}
+.grid strong{font-size:19px}.buy strong{color:var(--ac)}.stop strong{color:var(--dn)}.sell strong{color:var(--up)}
+ul{margin:0 0 8px;padding-left:18px;font-size:14px}li{margin:2px 0}
+.news{font-size:13px;color:var(--mut);margin:6px 0 0}.news a,.foot a{color:var(--ac)}
+h2{font-size:16px;margin:22px 0 8px}
+.rd{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--ln);font-size:15px}
+.empty{color:var(--mut)}
+.foot{color:var(--mut);font-size:12.5px;margin:22px 0 0}
+form{max-width:340px;margin:18vh auto 0;padding:16px}
+input,button{font:inherit;width:100%;padding:12px;border-radius:8px;border:1px solid var(--ln);margin:8px 0;background:var(--sf);color:var(--ink)}
+button{background:var(--ac);color:var(--bg);border:0;font-weight:600;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:3px solid var(--ac);outline-offset:2px}
+.err{color:var(--dn);min-height:20px;font-size:14px}
+</style>
+</head>
+<body>
+<form id="lg" autocomplete="off">
+  <h1>PSX Signals</h1>
+  <p class="sub">Enter your dashboard password to unlock today's signals.</p>
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password" required>
+  <button type="submit">Unlock</button>
+  <div class="err" id="er"></div>
+</form>
+<main id="app" hidden></main>
+<script>
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $ = id => document.getElementById(id);
+let pw = sessionStorage.getItem('pw'), timer;
+
+async function fetchBlob() {
+  const owner = location.hostname.split('.')[0], repo = location.pathname.split('/')[1];
+  try {  // GitHub API serves the freshest copy (Pages can lag behind commits)
+    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/docs/signals.enc.json`,
+      {headers: {Accept: 'application/vnd.github.raw+json'}, cache: 'no-store'});
+    if (r.ok) return r.json();
+  } catch (e) {}
+  const r = await fetch('signals.enc.json?' + Date.now(), {cache: 'no-store'});
+  if (!r.ok) throw new Error('nodata');
+  return r.json();
+}
+async function decrypt(blob, pw) {
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({name:'PBKDF2', salt:b64(blob.salt), iterations:200000, hash:'SHA-256'},
+    km, {name:'AES-GCM', length:256}, false, ['decrypt']);
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:b64(blob.iv)}, key, b64(blob.data));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+const n = (x, d=2) => Number(x).toLocaleString('en-PK', {maximumFractionDigits:d});
+const stClass = s => s.includes('TARGET') ? 'win' : s === 'STOP HIT' ? 'loss' : '';
+
+function ladder(s) {
+  const lo = s.stop, hi = s.t2, p = x => Math.max(0, Math.min(100, (x - lo) / (hi - lo) * 100));
+  const e = p(s.entry);
+  return `<div class="lad" style="--e:${e}%"><div class="tr"></div>
+    <i style="left:${p(s.entry)}%"></i><i style="left:${p(s.t1)}%"></i>
+    <b style="left:${p(s.now)}%" title="Now ${n(s.now)}"></b>
+    <span style="left:0%">Stop</span><span style="left:${e}%">Buy</span>
+    <span style="left:${p(s.t1)}%">Sell 1</span><span style="left:100%">Sell 2</span></div>`;
+}
+function card(s) {
+  const pnl = (s.now / s.entry - 1) * 100;
+  return `<section class="card">
+    <div class="top"><div><span class="sym">${esc(s.symbol)}</span> ${s.shariah ? '<span class="sh">(Shariah)</span>' : ''}</div>
+      <span class="st ${stClass(s.status)}">${esc(s.status)}</span></div>
+    <p class="meta">Shared at ${esc(s.issued_at)} PKT · now ${n(s.now)} (${pnl >= 0 ? '+' : ''}${n(pnl)}% from entry) · score ${s.score}</p>
+    ${ladder(s)}
+    <div class="grid">
+      <div class="buy"><small>Buy around</small><strong>${n(s.entry)}</strong></div>
+      <div class="stop"><small>Stop loss</small><strong>${n(s.stop)}</strong></div>
+      <div class="sell"><small>Sell range</small><strong>${n(s.t1)} – ${n(s.t2)}</strong></div>
+      <div><small>Quantity (≈ Rs ${n(s.cost,0)})</small><strong>${n(s.shares,0)}</strong></div>
+    </div>
+    <ul>${s.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+    <p class="meta" style="margin:6px 0">Support ${n(s.support)} · Resistance ${n(s.resistance)} · RSI ${n(s.rsi,0)} · Volume ${n(s.volume_ratio,1)}x · VWAP ${n(s.vwap)} · Max loss if stopped ≈ Rs ${n(s.risk_amount,0)}</p>
+    ${s.news.length ? `<p class="news">${s.news.map(h => esc(h)).join('<br>')}</p>` : ''}
+    <p class="news"><a href="https://dps.psx.com.pk/company/${encodeURIComponent(s.symbol)}" target="_blank" rel="noopener">Check financials, debt and announcements on PSX</a> before you buy.</p>
+  </section>`;
+}
+function render(d) {
+  const t = new Date(d.updated), hm = t.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit', timeZone:'Asia/Karachi'});
+  $('app').innerHTML = `<h1>Today's signals</h1>
+    <p class="sub"><span class="pill ${d.market_open ? 'on' : ''}">${d.market_open ? 'Market open' : 'Market closed'}</span>
+    Updated ${hm} PKT · ${d.scanned} stocks scanned · ${d.risk_pct}% risk per trade${d.status !== 'ok' ? ` · <span style="color:var(--warn)">${esc(d.status)}</span>` : ''}</p>
+    ${d.signals.length ? d.signals.map(card).join('') :
+      '<p class="card empty">No signal yet. The scanner only shares a stock when several checks line up, between 09:45 and 14:15, and it may share none on a quiet day. You will get a push alert the moment one appears.</p>'}
+    <h2>On the radar (not signals yet)</h2>
+    ${d.radar.map(r => `<div class="rd"><span>${esc(r.symbol)} ${r.shariah ? '<span class="sh">(Shariah)</span>' : ''}</span><span>${n(r.price)} · ${r.change >= 0 ? '+' : ''}${n(r.change)}% · score ${r.score}</span></div>`).join('') || '<p class="empty">Nothing close to qualifying.</p>'}
+    <p class="foot">Rule-based screening, not financial advice. Signals can be wrong, and prices can gap through a stop loss. Shariah tags come from an approximate list: check the current KMI list. Data may be delayed.</p>`;
+}
+async function refresh() {
+  try { render(await decrypt(await fetchBlob(), pw)); $('lg').hidden = true; $('app').hidden = false; return true; }
+  catch (e) {
+    if (e.message === 'nodata') { $('lg').hidden = true; $('app').hidden = false; $('app').innerHTML = '<h1>Waiting for the first scan</h1><p class="sub">No data yet. The scanner writes the first file when the market is open, or when you run it manually from the GitHub Actions tab.</p>'; return true; }
+    return false;
+  }
+}
+$('lg').addEventListener('submit', async ev => {
+  ev.preventDefault(); pw = $('pw').value; $('er').textContent = '';
+  if (await refresh()) { sessionStorage.setItem('pw', pw); start(); } else $('er').textContent = 'Wrong password, or the data could not be loaded.';
+});
+function start() { clearInterval(timer); timer = setInterval(refresh, 120000); }
+if (pw) refresh().then(ok => { if (ok) start(); else sessionStorage.removeItem('pw'); });
+</script>
+</body>
+</html>
