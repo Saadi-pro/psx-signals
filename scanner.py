@@ -1,6 +1,6 @@
 """PSX day-trading signal scanner. Runs on GitHub Actions every 5 minutes.
 Rule-based screening tool, not financial advice. Signals can and will be wrong."""
-import argparse, base64, json, math, os, smtplib, sys, time
+import argparse, base64, json, math, os, smtplib, socket, sys, time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import requests
 from cryptography.hazmat.primitives import hashes
+from requests.adapters import HTTPAdapter
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
@@ -43,16 +44,57 @@ def signal_window(now):
 
 
 # ---------- data ----------
+HOST = "dps.psx.com.pk"
+# PSX sits behind several servers and some answer 404 to every data request (while pages load fine).
+# We probe for one that really serves data and pin to it. Seeds are known IPs; DNS answers are added.
+SEED_IPS = ["52.128.23.16", "52.128.23.6"]
+NODE = {}
+
+class _Pin(HTTPAdapter):
+    """Connect to a chosen IP but still verify the certificate for the real hostname."""
+    def init_poolmanager(self, *a, **k):
+        k["server_hostname"] = HOST
+        k["assert_hostname"] = HOST
+        super().init_poolmanager(*a, **k)
+
+def _serves_data(r):
+    try: return r.status_code == 200 and r.json().get("status") == 1
+    except Exception: return False
+
+def find_node():
+    ips = []
+    for _ in range(6):
+        try: ips += [a[4][0] for a in socket.getaddrinfo(HOST, 443, socket.AF_INET)]
+        except Exception: pass
+    for ip in dict.fromkeys(SEED_IPS + ips):
+        sess = requests.Session()
+        sess.headers.update({**HDR, "Host": HOST})
+        sess.mount("https://", _Pin())
+        try:
+            r = sess.get(f"https://{ip}/timeseries/eod/OGDC", timeout=15)
+            if _serves_data(r):
+                NODE.update(ip=ip, sess=sess); print("PSX node:", ip); return True
+            print("node", ip, "-> HTTP", r.status_code)
+        except Exception as e:
+            print("node", ip, "failed:", str(e)[:120])
+    NODE.clear(); print("No PSX node served data; falling back to normal DNS")
+    return False
+
 def get(url, **kw):
     err = None
-    for _ in range(3):
+    for attempt in range(3):
         try:
-            r = requests.get(url, headers=HDR, timeout=20, **kw)
+            if NODE and url.startswith("https://" + HOST):
+                r = NODE["sess"].get(url.replace(HOST, NODE["ip"], 1), timeout=20, **kw)
+            else:
+                r = requests.get(url, headers=HDR, timeout=20, **kw)
             r.raise_for_status()
             return r
         except Exception as e:
             err = e
-            time.sleep(2)
+            if "404" in str(e) and url.startswith("https://" + HOST) and attempt < 2:
+                find_node()          # node went bad: look for another one
+            time.sleep(1)
     raise err
 
 def frame(rows, cols):
@@ -193,6 +235,7 @@ def run():
     if not (market_open(now) or force):
         print("Market closed, nothing to do."); return
     pw = os.environ["DASH_PASSWORD"]
+    find_node()
     prev, today = load_prev(pw), str(now.date())
     sigs = [s for s in prev.get("signals", []) if s["date"] == today]
     reminded = prev.get("reminded") == today
@@ -248,6 +291,7 @@ def run():
 
 def test():
     now = datetime.now(PKT)
+    find_node()
     for sym in ["OGDC", "LUCK", "HUBC"]:
         try:
             e, i = eod(sym), intraday(sym)
